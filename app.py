@@ -3,24 +3,36 @@ import pandas as pd
 import yfinance as yf
 
 st.title("💡 全台股/ETF 智慧存股計算機")
-st.write("你可以從常用清單選擇，或直接輸入任意 4 碼台股代號來查詢與計算！")
+st.write("直接在下方框框輸入代號或名稱（例如：台積電、00888、聯發科），系統會自動搜尋提示！")
 
-# Initialize session state
+# Initialize session state for portfolio
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = []
 
-# Popular stock choices for quick selection
-stock_options = {
+# Comprehensive list of popular Taiwan stocks and ETFs for autocomplete search
+# Format: "Display Name (Code)" -> Code
+stock_database = {
+    "0050 元大台灣50": "0050",
+    "0056 元大高股息": "0056",
+    "00713 元大台灣高息低波": "00713",
     "00878 國泰永續高股息": "00878",
     "00888 富邦台灣優質高息": "00888",
     "00919 群益台灣精選高息": "00919",
+    "00929 復華台灣科技優息": "00929",
+    "00940 元大台灣價值高息": "00940",
     "2330 台積電": "2330",
     "2454 聯發科": "2454",
-    "0050 元大台灣50": "0050",
-    "0056 元大高股息": "0056"
+    "2317 鴻海": "2317",
+    "2412 中華電": "2412",
+    "2881 富邦金": "2881",
+    "2882 國泰金": "2882",
+    "2891 中信金": "2891",
+    "3037 欣興": "3037",
+    "2308 台達電": "2308",
+    "3711 日月光投控": "3711"
 }
 
-# Helper function to fetch price with validation (.TW / .TWO)
+# Helper function to fetch price and validate suffix (.TW / .TWO)
 @st.cache_data
 def get_stock_price(raw_ticker):
     tickers_to_try = [f"{raw_ticker}.TW", f"{raw_ticker}.TWO"]
@@ -36,20 +48,20 @@ def get_stock_price(raw_ticker):
             continue
     return None, 0.0
 
-# 1. Selection interface supporting both preset and custom 4-digit code
+# 1. Autocomplete Search Selection Interface
 st.subheader("➕ 新增持股")
-input_mode = st.radio("選擇輸入方式", ["從常用清單選擇", "自行輸入 4 碼代號"], horizontal=True)
-
 col1, col2, col3 = st.columns([2, 1, 1])
 
 with col1:
-    if input_mode == "從常用清單選擇":
-        selected_label = st.selectbox("選擇股票 / ETF", list(stock_options.keys()))
-        raw_ticker = stock_options[selected_label]
-        stock_name = selected_label.split(" ")[1]
-    else:
-        raw_ticker = st.text_input("輸入台股 4 碼代號 (例如 00888, 2330)", value="").strip()
-        stock_name = f"代號 {raw_ticker}"
+    # st.selectbox acts as an autocomplete search box when typing inside it
+    selected_option = st.selectbox(
+        "搜尋股票名稱或代號",
+        options=list(stock_database.keys()),
+        index=0,
+        help="您可以直接在此輸入中文名稱或 4 碼代號進行搜尋"
+    )
+    raw_ticker = stock_database[selected_option]
+    stock_name = selected_option.split(" ", 1)[1] # Extract stock name
 
 with col2:
     input_shares = st.number_input("持有股數 (或零股數)", min_value=1, value=1000, step=1)
@@ -59,22 +71,19 @@ with col3:
     st.write("")
     add_btn = st.button("加入清單")
 
-if add_btn and raw_ticker:
-    # Validate ticker and get correct suffix before adding
+if add_btn:
+    # Validate market data before adding to portfolio
     valid_ticker, test_price = get_stock_price(raw_ticker)
     
     if not valid_ticker or test_price == 0.0:
-        st.error(f"找不到代號 「{raw_ticker}」 的市場資料，請確認代號是否正確！")
+        st.error(f"無法取得代號 「{raw_ticker}」 的市場資料，請確認代號是否正確！")
     else:
-        # If user used custom input, try to get a cleaner name if possible or use default
-        if input_mode == "自行輸入 4 碼代號":
-            stock_name = f"台股 {raw_ticker}"
-            
+        category = "ETF" if raw_ticker.startswith(('00', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) else "個股"
+        
         existing_item = next((item for item in st.session_state.portfolio if item["Stock"] == valid_ticker), None)
         if existing_item:
             existing_item["Shares"] += input_shares
         else:
-            category = "ETF" if raw_ticker.startswith(('00', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) else "個股"
             st.session_state.portfolio.append({
                 "Stock": valid_ticker,
                 "Name": stock_name,
@@ -84,7 +93,7 @@ if add_btn and raw_ticker:
         st.success(f"成功加入 {stock_name}！")
         st.rerun()
 
-# 2. Display portfolio and robust price fetching
+# 2. Display portfolio and real-time prices
 st.subheader("📊 目前持股清單")
 
 if len(st.session_state.portfolio) > 0:
@@ -107,7 +116,7 @@ if len(st.session_state.portfolio) > 0:
     total_asset = df_current["Total_Value"].sum()
     st.metric(label="總股票市值 (TWD)", value=f"${total_asset:,.0f}")
 
-    # 3. Restored Portfolio Insights & Suggestions
+    # 3. Portfolio Insights & Suggestions
     st.subheader("🤖 資產配置與現金流建議")
     if total_asset > 0:
         etf_mask = df_current["Category"].str.contains("ETF", na=False)
@@ -117,7 +126,7 @@ if len(st.session_state.portfolio) > 0:
         st.info(f"目前的資產配置：**ETF 類佔 {etf_ratio:.1f}%**")
         
         if etf_ratio > 85:
-            st.markdown("✅ **建議方向**：你的組合高度集中在高股息或市值型 ETF，現金流與穩定度表現優秀，非常適合長期存股與抗波動。")
+            st.markdown("✅ **建議方向**：組合高度集中在高股息或市值型 ETF，現金流與穩定度表現優秀，非常適合長期存股與抗波動。")
         elif etf_ratio >= 50:
             st.markdown("⚖️ **建議方向**：組合兼具 ETF 的穩定配息與個股的成長潛力，配置均衡。")
         else:
@@ -129,4 +138,4 @@ if len(st.session_state.portfolio) > 0:
         st.session_state.portfolio = []
         st.rerun()
 else:
-    st.info("目前還沒有加入任何持股，請從上方選擇或輸入代號加入！")
+    st.info("目前還沒有加入任何持股，請從上方搜尋框選擇並加入！")
