@@ -1,16 +1,20 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import plotly.express as px
+import json
 
-st.title("💡 全台股/ETF 智慧存股計算機")
-st.write("直接在下方框框輸入代號或名稱（例如：台積電、00888、聯發科），系統會自動搜尋提示！")
+# Set page configuration for better mobile display
+st.set_page_config(page_title="存股現金流與資產儀表板", page_icon="📈", layout="centered")
+
+st.title("📈 高股息存股與現金流儀表板")
+st.markdown("專為存股族打造的行動版資產管理工具，支援資料匯入/匯出與即時分析。")
 
 # Initialize session state for portfolio
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = []
 
-# Comprehensive list of popular Taiwan stocks and ETFs for autocomplete search
-# Format: "Display Name (Code)" -> Code
+# Stock database for search autocomplete
 stock_database = {
     "0050 元大台灣50": "0050",
     "0056 元大高股息": "0056",
@@ -26,13 +30,10 @@ stock_database = {
     "2412 中華電": "2412",
     "2881 富邦金": "2881",
     "2882 國泰金": "2882",
-    "2891 中信金": "2891",
-    "3037 欣興": "3037",
-    "2308 台達電": "2308",
-    "3711 日月光投控": "3711"
+    "2891 中信金": "2891"
 }
 
-# Helper function to fetch price and validate suffix (.TW / .TWO)
+# Robust price fetching function (.TW / .TWO fallback)
 @st.cache_data
 def get_stock_price(raw_ticker):
     tickers_to_try = [f"{raw_ticker}.TW", f"{raw_ticker}.TWO"]
@@ -48,41 +49,59 @@ def get_stock_price(raw_ticker):
             continue
     return None, 0.0
 
-# 1. Autocomplete Search Selection Interface
+# --- Section 1: Backup & Restore (Fixing re-entry hassle) ---
+with st.expander("💾 資料存檔與快速還原 (免重新輸入)"):
+    col_exp, col_imp = st.columns(2)
+    with col_exp:
+        if len(st.session_state.portfolio) > 0:
+            # Export portfolio to JSON
+            portfolio_json = json.dumps(st.session_state.portfolio, ensure_ascii=False)
+            st.download_button(
+                label="📥 下載目前持股備份",
+                data=portfolio_json,
+                file_name="my_portfolio.json",
+                mime="application/json"
+            )
+        else:
+            st.info("目前無資料可備份")
+            
+    with col_imp:
+        # Import portfolio from JSON
+        uploaded_file = st.file_uploader("📤 上傳備份檔案還原", type=["json"])
+        if uploaded_file is not None:
+            try:
+                loaded_data = json.load(uploaded_file)
+                st.session_state.portfolio = loaded_data
+                st.success("資料還原成功！")
+                st.rerun()
+            except Exception as e:
+                st.error("檔案格式錯誤，無法讀取。")
+
+st.markdown("---")
+
+# --- Section 2: Add Holdings ---
 st.subheader("➕ 新增持股")
-col1, col2, col3 = st.columns([2, 1, 1])
+selected_option = st.selectbox(
+    "搜尋股票名稱或代號",
+    options=list(stock_database.keys()),
+    help="點擊並輸入關鍵字即可快速搜尋"
+)
+raw_ticker = stock_database[selected_option]
+stock_name = selected_option.split(" ", 1)[1]
 
-with col1:
-    # st.selectbox acts as an autocomplete search box when typing inside it
-    selected_option = st.selectbox(
-        "搜尋股票名稱或代號",
-        options=list(stock_database.keys()),
-        index=0,
-        help="您可以直接在此輸入中文名稱或 4 碼代號進行搜尋"
-    )
-    raw_ticker = stock_database[selected_option]
-    stock_name = selected_option.split(" ", 1)[1] # Extract stock name
+input_shares = st.number_input("持有股數 (或零股數)", min_value=1, value=1000, step=1)
 
-with col2:
-    input_shares = st.number_input("持有股數 (或零股數)", min_value=1, value=1000, step=1)
-
-with col3:
-    st.write("")
-    st.write("")
-    add_btn = st.button("加入清單")
-
-if add_btn:
-    # Validate market data before adding to portfolio
+if st.button("加入 / 更新至清單", type="primary", use_container_width=True):
     valid_ticker, test_price = get_stock_price(raw_ticker)
     
     if not valid_ticker or test_price == 0.0:
-        st.error(f"無法取得代號 「{raw_ticker}」 的市場資料，請確認代號是否正確！")
+        st.error(f"無法取得代號 「{raw_ticker}」 的市場資料，請確認！")
     else:
-        category = "ETF" if raw_ticker.startswith(('00', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) else "個股"
+        category = "高股息/ETF" if raw_ticker.startswith(('00', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) and int(raw_ticker[:2]) < 20 else "個股"
         
         existing_item = next((item for item in st.session_state.portfolio if item["Stock"] == valid_ticker), None)
         if existing_item:
-            existing_item["Shares"] += input_shares
+            existing_item["Shares"] = input_shares # Update to exact input
         else:
             st.session_state.portfolio.append({
                 "Stock": valid_ticker,
@@ -90,16 +109,18 @@ if add_btn:
                 "Shares": input_shares,
                 "Category": category
             })
-        st.success(f"成功加入 {stock_name}！")
+        st.success(f"已成功更新 {stock_name}！")
         st.rerun()
 
-# 2. Display portfolio and real-time prices
-st.subheader("📊 目前持股清單")
+st.markdown("---")
+
+# --- Section 3: Portfolio Overview & Charts ---
+st.subheader("📊 資產總覽與分佈")
 
 if len(st.session_state.portfolio) > 0:
     df_current = pd.DataFrame(st.session_state.portfolio)
 
-    with st.spinner("正在取得最新股價..."):
+    with st.spinner("正在連線取得最新即時股價..."):
         prices = []
         for raw_item in df_current["Stock"]:
             code = raw_item.split(".")[0]
@@ -109,33 +130,53 @@ if len(st.session_state.portfolio) > 0:
     df_current["Current_Price"] = prices
     df_current["Total_Value"] = df_current["Shares"] * df_current["Current_Price"]
 
+    # Display clean table
     df_display = df_current[["Name", "Stock", "Shares", "Current_Price", "Total_Value"]].copy()
     df_display.columns = ["名稱", "代號", "股數", "即時股價", "總市值"]
-    st.dataframe(df_display, use_container_width=True)
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     total_asset = df_current["Total_Value"].sum()
     st.metric(label="總股票市值 (TWD)", value=f"${total_asset:,.0f}")
 
-    # 3. Portfolio Insights & Suggestions
-    st.subheader("🤖 資產配置與現金流建議")
+    # Rich Visualizations: Plotly Pie Chart
+    if total_asset > 0:
+        fig = px.pie(
+            df_current, 
+            values="Total_Value", 
+            names="Name", 
+            title="資產配置比例圓餅圖",
+            hole=0.4
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- Section 4: Enhanced Insights & Dividend Estimation ---
+    st.subheader("🤖 智能分析與現金流預估")
     if total_asset > 0:
         etf_mask = df_current["Category"].str.contains("ETF", na=False)
         etf_value = df_current[etf_mask]["Total_Value"].sum()
         etf_ratio = (etf_value / total_asset) * 100
         
-        st.info(f"目前的資產配置：**ETF 類佔 {etf_ratio:.1f}%**")
-        
-        if etf_ratio > 85:
-            st.markdown("✅ **建議方向**：組合高度集中在高股息或市值型 ETF，現金流與穩定度表現優秀，非常適合長期存股與抗波動。")
-        elif etf_ratio >= 50:
-            st.markdown("⚖️ **建議方向**：組合兼具 ETF 的穩定配息與個股的成長潛力，配置均衡。")
-        else:
-            st.markdown("⚠️ **建議方向**：個股比例較高，雖然成長爆發力強，但波動相對較大，若追求穩健現金流可考慮適度增加 ETF 比重。")
-    else:
-        st.warning("目前持股市值為 0，請檢查股價資料或股數。")
+        # Rough estimated annual dividend simulation (assuming average 6% yield for high-dividend ETFs, 2.5% for stocks)
+        estimated_annual_dividend = 0
+        for _, row in df_current.iterrows():
+            yield_rate = 0.065 if "ETF" in row["Category"] else 0.03
+            estimated_annual_dividend += row["Total_Value"] * yield_rate
 
-    if st.button("清空所有持股"):
+        col_inf1, col_inf2 = st.columns(2)
+        with col_inf1:
+            st.metric("預估年度總股息", f"${estimated_annual_dividend:,.0f}")
+        with col_inf2:
+            st.metric("預估平均每月現金流", f"${estimated_annual_dividend / 12:,.0f}")
+
+        st.info(f"目前的資產配置：**高股息/ETF 佔 {etf_ratio:.1f}%**")
+        
+        if etf_ratio >= 80:
+            st.markdown("✅ **現金流策略**：高度聚焦高股息資產，具備極佳的被動收入防禦力與季配現金流。")
+        else:
+            st.markdown("⚖️ **平衡策略**：兼顧成長股與高股息，資產抗震與成長動能兼具。")
+
+    if st.button("🗑️ 清空所有持股紀錄", use_container_width=True):
         st.session_state.portfolio = []
         st.rerun()
 else:
-    st.info("目前還沒有加入任何持股，請從上方搜尋框選擇並加入！")
+    st.info("目前尚無持股，請透過上方選單搜尋並加入股票！")
