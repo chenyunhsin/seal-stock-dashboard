@@ -8,7 +8,7 @@ import json
 st.set_page_config(page_title="存股現金流與資產儀表板", page_icon="📈", layout="centered")
 
 st.title("📈 高股息存股與現金流儀表板")
-st.markdown("專為存股族打造的行動版資產管理工具，支援資料匯入/匯出與即時分析。")
+st.markdown("專為存股族打造的行動版資產管理工具，支援成本追蹤與即時分析。")
 
 # Initialize session state for portfolio
 if "portfolio" not in st.session_state:
@@ -49,12 +49,11 @@ def get_stock_price(raw_ticker):
             continue
     return None, 0.0
 
-# --- Section 1: Backup & Restore (Fixing re-entry hassle) ---
+# --- Section 1: Backup & Restore ---
 with st.expander("💾 資料存檔與快速還原 (免重新輸入)"):
     col_exp, col_imp = st.columns(2)
     with col_exp:
         if len(st.session_state.portfolio) > 0:
-            # Export portfolio to JSON
             portfolio_json = json.dumps(st.session_state.portfolio, ensure_ascii=False)
             st.download_button(
                 label="📥 下載目前持股備份",
@@ -66,7 +65,6 @@ with st.expander("💾 資料存檔與快速還原 (免重新輸入)"):
             st.info("目前無資料可備份")
             
     with col_imp:
-        # Import portfolio from JSON
         uploaded_file = st.file_uploader("📤 上傳備份檔案還原", type=["json"])
         if uploaded_file is not None:
             try:
@@ -79,8 +77,8 @@ with st.expander("💾 資料存檔與快速還原 (免重新輸入)"):
 
 st.markdown("---")
 
-# --- Section 2: Add Holdings ---
-st.subheader("➕ 新增持股")
+# --- Section 2: Add Holdings (With Cost Basis Support) ---
+st.subheader("➕ 新增或更新持股")
 selected_option = st.selectbox(
     "搜尋股票名稱或代號",
     options=list(stock_database.keys()),
@@ -89,7 +87,13 @@ selected_option = st.selectbox(
 raw_ticker = stock_database[selected_option]
 stock_name = selected_option.split(" ", 1)[1]
 
-input_shares = st.number_input("持有股數 (或零股數)", min_value=1, value=1000, step=1)
+col_input1, col_input2 = st.columns(2)
+with col_input1:
+    input_shares = st.number_input("持有股數", min_value=1, value=1000, step=1)
+with col_input2:
+    input_cost = st.number_input("每股平均買進成本 (元)", min_value=0.0, value=50.0, step=0.1, help="真實投入成本，不因發放股利而自動扣除")
+
+input_dividend = st.number_input("累計已領現金股利 (元，選填)", min_value=0.0, value=0.0, step=100.0, help="記錄已經領到口袋的現金，不影響本金成本")
 
 if st.button("加入 / 更新至清單", type="primary", use_container_width=True):
     valid_ticker, test_price = get_stock_price(raw_ticker)
@@ -97,16 +101,22 @@ if st.button("加入 / 更新至清單", type="primary", use_container_width=Tru
     if not valid_ticker or test_price == 0.0:
         st.error(f"無法取得代號 「{raw_ticker}」 的市場資料，請確認！")
     else:
+        # Determine category based on stock code prefix
         category = "高股息/ETF" if raw_ticker.startswith(('00', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) and int(raw_ticker[:2]) < 20 else "個股"
         
+        # Check if stock already exists in portfolio, update if exists
         existing_item = next((item for item in st.session_state.portfolio if item["Stock"] == valid_ticker), None)
         if existing_item:
-            existing_item["Shares"] = input_shares # Update to exact input
+            existing_item["Shares"] = input_shares
+            existing_item["Cost"] = input_cost
+            existing_item["Total_Dividend"] = input_dividend
         else:
             st.session_state.portfolio.append({
                 "Stock": valid_ticker,
                 "Name": stock_name,
                 "Shares": input_shares,
+                "Cost": input_cost,
+                "Total_Dividend": input_dividend,
                 "Category": category
             })
         st.success(f"已成功更新 {stock_name}！")
@@ -120,6 +130,7 @@ st.subheader("📊 資產總覽與分佈")
 if len(st.session_state.portfolio) > 0:
     df_current = pd.DataFrame(st.session_state.portfolio)
 
+    # Fetch latest stock prices
     with st.spinner("正在連線取得最新即時股價..."):
         prices = []
         for raw_item in df_current["Stock"]:
@@ -128,17 +139,30 @@ if len(st.session_state.portfolio) > 0:
             prices.append(p)
 
     df_current["Current_Price"] = prices
+    df_current["Total_Cost"] = df_current["Shares"] * df_current["Cost"]
     df_current["Total_Value"] = df_current["Shares"] * df_current["Current_Price"]
+    df_current["Capital_Gain"] = df_current["Total_Value"] - df_current["Total_Cost"]
+    df_current["Total_Profit"] = df_current["Capital_Gain"] + df_current["Total_Dividend"]
 
     # Display clean table
-    df_display = df_current[["Name", "Stock", "Shares", "Current_Price", "Total_Value"]].copy()
-    df_display.columns = ["名稱", "代號", "股數", "即時股價", "總市值"]
+    df_display = df_current[["Name", "Stock", "Shares", "Cost", "Total_Cost", "Current_Price", "Total_Value", "Total_Dividend", "Total_Profit"]].copy()
+    df_display.columns = ["名稱", "代號", "股數", "均價", "總成本", "現價", "市值", "已領股利", "總損益(含股利)"]
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
+    total_cost = df_current["Total_Cost"].sum()
     total_asset = df_current["Total_Value"].sum()
-    st.metric(label="總股票市值 (TWD)", value=f"${total_asset:,.0f}")
+    total_dividend = df_current["Total_Dividend"].sum()
+    total_profit = df_current["Total_Profit"].sum()
 
-    # Rich Visualizations: Plotly Pie Chart
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.metric(label="總投入本金", value=f"${total_cost:,.0f}")
+    with col_m2:
+        st.metric(label="目前股票市值", value=f"${total_asset:,.0f}")
+    with col_m3:
+        st.metric(label="總資產損益 (含股利)", value=f"${total_profit:,.0f}", delta=f"${total_profit:,.0f}")
+
+    # Rich Visualizations: Plotly Pie Chart for Asset Allocation
     if total_asset > 0:
         fig = px.pie(
             df_current, 
@@ -156,7 +180,7 @@ if len(st.session_state.portfolio) > 0:
         etf_value = df_current[etf_mask]["Total_Value"].sum()
         etf_ratio = (etf_value / total_asset) * 100
         
-        # Rough estimated annual dividend simulation (assuming average 6% yield for high-dividend ETFs, 2.5% for stocks)
+        # Rough estimated annual dividend simulation
         estimated_annual_dividend = 0
         for _, row in df_current.iterrows():
             yield_rate = 0.065 if "ETF" in row["Category"] else 0.03
@@ -164,7 +188,7 @@ if len(st.session_state.portfolio) > 0:
 
         col_inf1, col_inf2 = st.columns(2)
         with col_inf1:
-            st.metric("預估年度總股息", f"${estimated_annual_dividend:,.0f}")
+            st.metric("預估年度總股息收入", f"${estimated_annual_dividend:,.0f}")
         with col_inf2:
             st.metric("預估平均每月現金流", f"${estimated_annual_dividend / 12:,.0f}")
 
